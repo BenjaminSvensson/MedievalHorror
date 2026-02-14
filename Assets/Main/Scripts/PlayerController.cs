@@ -18,8 +18,10 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     [SerializeField] private float runSpeed = 6.4f;
     [SerializeField] private float crouchSpeed = 2.2f;
     [SerializeField] private float jumpHeight = 1.2f;
+    [SerializeField] private float coyoteTime = 0.12f;
     [SerializeField] private float gravity = -25f;
-    [SerializeField] private float groundedStepOffset = 0.35f;
+    [SerializeField] private float maxStepHeight = 0.35f;
+    [SerializeField] private float crouchStepHeight = 0.05f;
     [SerializeField] private float airborneStepOffset = 0.02f;
     [SerializeField] private float groundSnapVelocity = -4f;
 
@@ -60,15 +62,17 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     [SerializeField] private float forwardTilt = 1.4f;
     [SerializeField] private float lookSway = 0.08f;
     [SerializeField] private float lookSwaySmooth = 10f;
-    [SerializeField] private float jumpKick = 2f;
-    [SerializeField] private float landKick = 2.5f;
-    [SerializeField] private float kickRecovery = 8f;
+    [SerializeField] private float jumpUpKick = 2.2f;
+    [SerializeField] private float inAirPitchReturn = 4.5f;
+    [SerializeField] private float landDownKick = 3.2f;
+    [SerializeField] private float kickRecovery = 10f;
 
     private InputSystem_Actions inputActions;
     private CharacterController controller;
     private float yaw;
     private float pitch;
     private float verticalVelocity;
+    private float coyoteTimer;
     private float standingHeight;
     private Vector3 cameraDefaultLocalPosition;
     private float bobTimer;
@@ -77,7 +81,7 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     private float stepBobIntensity;
     private float currentLeanAngle;
     private float currentLeanOffset;
-    private float currentKick;
+    private float jumpLandPitchOffset;
     private Vector2 smoothedLookDelta;
     private Vector3 smoothedTilt;
     private Vector2 moveInput;
@@ -92,6 +96,7 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     private bool leanRightHeld;
     private bool lookFromPointer;
     private float lastYPosition;
+    private bool wasJumping;
 
     private void Awake()
     {
@@ -113,6 +118,9 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         standingHeight = controller.height;
         defaultControllerCenter = controller.center;
         crouchHeight = Mathf.Max(crouchHeight, controller.radius * 2f + 0.05f);
+        maxStepHeight = Mathf.Clamp(maxStepHeight, 0f, standingHeight - 0.01f);
+        crouchStepHeight = Mathf.Clamp(crouchStepHeight, 0f, crouchHeight - 0.01f);
+        controller.stepOffset = maxStepHeight;
         cameraDefaultLocalPosition = playerCamera.transform.localPosition;
         targetFov = playerCamera.fieldOfView;
         lastYPosition = transform.position.y;
@@ -190,22 +198,34 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     {
         bool isGrounded = controller.isGrounded;
 
+        if (isGrounded)
+        {
+            coyoteTimer = coyoteTime;
+        }
+        else
+        {
+            coyoteTimer -= Time.deltaTime;
+        }
+
         if (isGrounded && verticalVelocity < 0f)
         {
             verticalVelocity = groundSnapVelocity;
         }
 
-        controller.stepOffset = isGrounded ? groundedStepOffset : airborneStepOffset;
+        float groundedStepHeight = isCrouching ? crouchStepHeight : maxStepHeight;
+        controller.stepOffset = isGrounded ? groundedStepHeight : airborneStepOffset;
 
         bool running = sprintHeld && !isCrouching && moveInput.y > 0.05f;
         float speed = isCrouching ? crouchSpeed : (running ? runSpeed : walkSpeed);
 
         Vector3 desiredMove = (transform.right * moveInput.x + transform.forward * moveInput.y) * speed;
 
-        if (isGrounded && jumpPressed && !isCrouching)
+        if (coyoteTimer > 0f && jumpPressed && !isCrouching)
         {
             verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
-            currentKick += jumpKick;
+            jumpLandPitchOffset += jumpUpKick;
+            wasJumping = true;
+            coyoteTimer = 0f;
         }
         jumpPressed = false;
 
@@ -216,7 +236,8 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
 
         if (!wasGrounded && controller.isGrounded && verticalVelocity < -8f)
         {
-            currentKick -= landKick;
+            jumpLandPitchOffset -= landDownKick;
+            wasJumping = false;
         }
 
         wasGrounded = controller.isGrounded;
@@ -314,9 +335,16 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         float noiseYaw = (Mathf.PerlinNoise(0.17f, noiseTimer) - 0.5f) * 2f * footageNoiseRotation.y;
         float noiseRoll = (Mathf.PerlinNoise(noiseTimer * 0.7f, 0.31f) - 0.5f) * 2f * footageNoiseRotation.z;
 
-        currentKick = Mathf.Lerp(currentKick, 0f, Time.deltaTime * kickRecovery);
+        if (!controller.isGrounded && wasJumping)
+        {
+            jumpLandPitchOffset = Mathf.MoveTowards(jumpLandPitchOffset, 0f, Time.deltaTime * inAirPitchReturn);
+        }
+        else
+        {
+            jumpLandPitchOffset = Mathf.Lerp(jumpLandPitchOffset, 0f, Time.deltaTime * kickRecovery);
+        }
 
-        float finalPitch = pitch + bobPitch + stepPitch + noisePitch + smoothedLookDelta.x + smoothedTilt.x + currentKick;
+        float finalPitch = pitch + bobPitch + stepPitch + noisePitch + smoothedLookDelta.x + smoothedTilt.x + jumpLandPitchOffset;
         float finalYaw = noiseYaw + smoothedLookDelta.y;
         float finalRoll = currentLeanAngle + bobRoll + stepRoll + noiseRoll + smoothedTilt.z;
 

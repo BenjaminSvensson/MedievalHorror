@@ -211,38 +211,47 @@ MonoBehaviour:
   playerCamera: {fileID: 5247240587416786175}
   mouseSensitivity: 0.2
   gamepadLookSensitivity: 180
-  maxLookPitch: 86
+  maxLookPitch: 75
   lockAndHideCursor: 1
   walkSpeed: 3.4
   runSpeed: 12
   crouchSpeed: 2.2
   jumpHeight: 1.2
+  coyoteTime: 0.12
   gravity: -25
-  crouchHeight: 1.15
+  maxStepHeight: 0.8
+  crouchStepHeight: 0.05
+  airborneStepOffset: 0.02
+  groundSnapVelocity: -4
+  crouchHeight: 0.8
   crouchTransitionSpeed: 10
   crouchCameraDrop: 0.45
   leanAngle: 10
   leanOffset: 0.6
   leanSmooth: 24
-  zoomStep: 3.5
+  zoomStep: 4
   zoomSmooth: 12
   minFov: 25
   maxFov: 80
-  walkBobFrequency: 8.5
-  walkBobAmplitude: 0.045
-  runBobFrequency: 12.5
-  runBobAmplitude: 0.07
+  walkBobFrequency: 7.5
+  walkBobAmplitude: 0.035
+  runBobFrequency: 9
+  runBobAmplitude: 0.06
   crouchBobFrequency: 6
   crouchBobAmplitude: 0.028
   idleBobFrequency: 1.6
   idleBobAmplitude: 0.01
   cameraPositionSmooth: 14
+  stepBobBoost: 2.2
+  stepBobThreshold: 0.15
+  stepBobRecovery: 8
   footageNoiseFrequency: 2
   footageNoiseRotation: {x: 0.3, y: 0.2, z: 0.4}
   strafeTilt: 2.2
   forwardTilt: 1.4
   lookSway: 0.08
   lookSwaySmooth: 10
-  jumpKick: 2
-  landKick: 2.5
+  jumpUpKick: -2
+  inAirPitchReturn: 4.5
+  landDownKick: 2
   kickRecovery: 8
