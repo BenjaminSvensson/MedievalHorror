@@ -6,6 +6,7 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
 {
     [Header("References")]
     [SerializeField] private Camera playerCamera;
+    [SerializeField] private PlayerInteractor playerInteractor;
 
     [Header("Look")]
     [SerializeField] private float mouseSensitivity = 0.08f;
@@ -108,6 +109,16 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
             playerCamera = GetComponentInChildren<Camera>();
         }
 
+        if (playerInteractor == null)
+        {
+            playerInteractor = GetComponent<PlayerInteractor>();
+        }
+
+        if (playerInteractor == null)
+        {
+            playerInteractor = GetComponentInChildren<PlayerInteractor>();
+        }
+
         if (playerCamera == null)
         {
             Debug.LogError($"{nameof(PlayerController)} requires a Camera reference.", this);
@@ -122,7 +133,8 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         crouchStepHeight = Mathf.Clamp(crouchStepHeight, 0f, crouchHeight - 0.01f);
         controller.stepOffset = maxStepHeight;
         cameraDefaultLocalPosition = playerCamera.transform.localPosition;
-        targetFov = playerCamera.fieldOfView;
+        targetFov = maxFov;
+        playerCamera.fieldOfView = maxFov;
         lastYPosition = transform.position.y;
 
         if (lockAndHideCursor)
@@ -149,6 +161,8 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         {
             return;
         }
+
+        playerInteractor?.SetInteractHeld(false);
 
         inputActions.Player.SetCallbacks(null);
         inputActions.Player.Disable();
@@ -389,7 +403,15 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         lookFromPointer = context.control != null && context.control.device is Pointer;
     }
 
-    public void OnInteract(InputAction.CallbackContext context) { }
+    public void OnInteract(InputAction.CallbackContext context)
+    {
+        playerInteractor?.SetInteractHeld(context.ReadValueAsButton());
+
+        if (context.performed)
+        {
+            playerInteractor?.TryInteract();
+        }
+    }
 
     public void OnCrouch(InputAction.CallbackContext context)
     {
