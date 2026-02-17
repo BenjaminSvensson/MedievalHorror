@@ -6,7 +6,6 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
 {
     [Header("References")]
     [SerializeField] private Camera playerCamera;
-    [SerializeField] private PlayerInteractor playerInteractor;
 
     [Header("Look")]
     [SerializeField] private float mouseSensitivity = 0.08f;
@@ -68,6 +67,41 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     [SerializeField] private float landDownKick = 3.2f;
     [SerializeField] private float kickRecovery = 10f;
 
+    [Header("Interaction")]
+    [SerializeField] private float interactionRange = 2.2f;
+    [SerializeField] private float interactionSphereRadius = 2f;
+    [SerializeField] private LayerMask interactionMask = ~0;
+    [SerializeField] private float interactionViewAngle = 75f;
+    [SerializeField] private float interactionProbeInterval = 0.06f;
+
+    [Header("Hands")]
+    [SerializeField] private bool createPlaceholderHandsIfMissing = true;
+    [SerializeField] private Transform leftHand;
+    [SerializeField] private Transform rightHand;
+    [SerializeField] private float handPoseSmooth = 10f;
+    [SerializeField] private float handReachSmooth = 18f;
+    [SerializeField] private float handReachHoldTime = 0.22f;
+    [SerializeField] private float handTargetDistancePadding = 0.14f;
+    [SerializeField] private float handTargetSideOffset = 0.08f;
+    [SerializeField] private float handTargetVerticalOffset = 0.06f;
+    [SerializeField] private Vector3 leftHandRestPosition = new Vector3(-0.18f, -0.22f, 0.42f);
+    [SerializeField] private Vector3 leftHandRestRotation = new Vector3(24f, -28f, 16f);
+    [SerializeField] private Vector3 leftHandReadyPosition = new Vector3(-0.1f, -0.08f, 0.28f);
+    [SerializeField] private Vector3 leftHandReadyRotation = new Vector3(18f, -16f, 8f);
+    [SerializeField] private Vector3 rightHandRestPosition = new Vector3(0.18f, -0.22f, 0.42f);
+    [SerializeField] private Vector3 rightHandRestRotation = new Vector3(24f, 28f, -16f);
+    [SerializeField] private Vector3 rightHandReadyPosition = new Vector3(0.1f, -0.08f, 0.28f);
+    [SerializeField] private Vector3 rightHandReadyRotation = new Vector3(18f, 16f, -8f);
+    [SerializeField] private Vector3 placeholderHandScale = new Vector3(0.07f, 0.1f, 0.07f);
+    [SerializeField] private Color placeholderHandColor = new Color(0.78f, 0.62f, 0.49f, 1f);
+
+    private enum HandPoseState
+    {
+        Rest,
+        Ready,
+        Reaching
+    }
+
     private InputSystem_Actions inputActions;
     private CharacterController controller;
     private float yaw;
@@ -98,6 +132,13 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     private bool lookFromPointer;
     private float lastYPosition;
     private bool wasJumping;
+    private float nextInteractionProbeTime;
+    private float reachTimer;
+    private bool interactPressed;
+    private Vector3 currentInteractionPoint;
+    private IPlayerInteractable currentInteractable;
+    private readonly Collider[] interactionHits = new Collider[24];
+    private HandPoseState handPoseState = HandPoseState.Rest;
 
     private void Awake()
     {
@@ -107,16 +148,6 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         if (playerCamera == null)
         {
             playerCamera = GetComponentInChildren<Camera>();
-        }
-
-        if (playerInteractor == null)
-        {
-            playerInteractor = GetComponent<PlayerInteractor>();
-        }
-
-        if (playerInteractor == null)
-        {
-            playerInteractor = GetComponentInChildren<PlayerInteractor>();
         }
 
         if (playerCamera == null)
@@ -142,6 +173,9 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
         }
+
+        EnsureHandsExist();
+        SnapHandsToCurrentPose();
     }
 
     private void OnEnable()
@@ -162,8 +196,6 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
             return;
         }
 
-        playerInteractor?.SetInteractHeld(false);
-
         inputActions.Player.SetCallbacks(null);
         inputActions.Player.Disable();
     }
@@ -176,11 +208,14 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
     private void Update()
     {
         ReadInput();
+        UpdateInteractionTarget();
+        ProcessInteractionInput();
         UpdateLook();
         UpdateMovement();
         UpdateCrouch();
         UpdateZoom();
         UpdateCameraEffects();
+        UpdateHands();
     }
 
     private void ReadInput()
@@ -378,6 +413,266 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
         );
     }
 
+    private void UpdateInteractionTarget()
+    {
+        if (Time.time < nextInteractionProbeTime)
+        {
+            return;
+        }
+
+        nextInteractionProbeTime = Time.time + interactionProbeInterval;
+        currentInteractable = null;
+        currentInteractionPoint = Vector3.zero;
+
+        Vector3 origin = playerCamera.transform.position;
+        Vector3 viewForward = playerCamera.transform.forward;
+        float minDot = Mathf.Cos(interactionViewAngle * Mathf.Deg2Rad);
+        float bestScore = float.MinValue;
+
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            origin,
+            interactionSphereRadius,
+            interactionHits,
+            interactionMask,
+            QueryTriggerInteraction.Collide
+        );
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            Collider hit = interactionHits[i];
+            if (hit == null)
+            {
+                continue;
+            }
+
+            IPlayerInteractable interactable = hit.GetComponentInParent<IPlayerInteractable>();
+            if (interactable == null || !interactable.CanInteract(this) || interactable is not Component interactableComponent)
+            {
+                continue;
+            }
+
+            Vector3 targetPoint = interactable.GetInteractionPoint();
+            Vector3 toTarget = targetPoint - origin;
+            float distance = toTarget.magnitude;
+
+            if (distance > interactionRange || distance < 0.001f)
+            {
+                continue;
+            }
+
+            Vector3 toTargetDir = toTarget / distance;
+            float dot = Vector3.Dot(viewForward, toTargetDir);
+            if (dot < minDot)
+            {
+                continue;
+            }
+
+            if (Physics.Raycast(origin, toTargetDir, out RaycastHit sightHit, distance, Physics.AllLayers, QueryTriggerInteraction.Ignore))
+            {
+                bool sameInteractable =
+                    sightHit.collider.GetComponentInParent<IPlayerInteractable>() == interactable ||
+                    sightHit.collider.transform.IsChildOf(interactableComponent.transform);
+
+                if (!sameInteractable)
+                {
+                    continue;
+                }
+            }
+
+            float score = (dot * 2f) - (distance / interactionRange);
+            if (score <= bestScore)
+            {
+                continue;
+            }
+
+            bestScore = score;
+            currentInteractable = interactable;
+            currentInteractionPoint = targetPoint;
+        }
+
+        if (handPoseState != HandPoseState.Reaching)
+        {
+            handPoseState = currentInteractable != null ? HandPoseState.Ready : HandPoseState.Rest;
+        }
+    }
+
+    private void ProcessInteractionInput()
+    {
+        if (!interactPressed)
+        {
+            return;
+        }
+
+        interactPressed = false;
+
+        if (currentInteractable == null)
+        {
+            return;
+        }
+
+        reachTimer = handReachHoldTime;
+        handPoseState = HandPoseState.Reaching;
+        currentInteractable.Interact(this);
+    }
+
+    private void UpdateHands()
+    {
+        if (reachTimer > 0f)
+        {
+            reachTimer -= Time.deltaTime;
+        }
+        else if (handPoseState == HandPoseState.Reaching)
+        {
+            handPoseState = currentInteractable != null ? HandPoseState.Ready : HandPoseState.Rest;
+        }
+
+        UpdateSingleHand(leftHand, true);
+        UpdateSingleHand(rightHand, false);
+    }
+
+    private void UpdateSingleHand(Transform hand, bool isLeftHand)
+    {
+        if (hand == null)
+        {
+            return;
+        }
+
+        Vector3 targetLocalPosition;
+        Quaternion targetLocalRotation;
+
+        if (handPoseState == HandPoseState.Reaching && currentInteractable != null)
+        {
+            GetReachPose(hand, isLeftHand, out targetLocalPosition, out targetLocalRotation);
+        }
+        else
+        {
+            GetIdlePose(isLeftHand, out targetLocalPosition, out targetLocalRotation);
+        }
+
+        float smooth = handPoseState == HandPoseState.Reaching ? handReachSmooth : handPoseSmooth;
+        hand.localPosition = Vector3.Lerp(hand.localPosition, targetLocalPosition, Time.deltaTime * smooth);
+        hand.localRotation = Quaternion.Slerp(hand.localRotation, targetLocalRotation, Time.deltaTime * smooth);
+    }
+
+    private void GetIdlePose(bool isLeftHand, out Vector3 localPosition, out Quaternion localRotation)
+    {
+        bool isReady = handPoseState == HandPoseState.Ready;
+
+        if (isLeftHand)
+        {
+            localPosition = isReady ? leftHandReadyPosition : leftHandRestPosition;
+            Vector3 euler = isReady ? leftHandReadyRotation : leftHandRestRotation;
+            localRotation = Quaternion.Euler(euler);
+            return;
+        }
+
+        localPosition = isReady ? rightHandReadyPosition : rightHandRestPosition;
+        Vector3 rightEuler = isReady ? rightHandReadyRotation : rightHandRestRotation;
+        localRotation = Quaternion.Euler(rightEuler);
+    }
+
+    private void GetReachPose(Transform hand, bool isLeftHand, out Vector3 localPosition, out Quaternion localRotation)
+    {
+        Transform parent = hand.parent;
+        if (parent == null)
+        {
+            localPosition = hand.localPosition;
+            localRotation = hand.localRotation;
+            return;
+        }
+
+        Vector3 cameraPosition = playerCamera.transform.position;
+        Vector3 toTarget = currentInteractionPoint - cameraPosition;
+        float targetDistance = Mathf.Clamp(toTarget.magnitude - handTargetDistancePadding, 0.25f, interactionRange);
+        Vector3 targetWorld = cameraPosition + toTarget.normalized * targetDistance;
+
+        float sideDirection = isLeftHand ? -1f : 1f;
+        targetWorld += playerCamera.transform.right * (sideDirection * handTargetSideOffset);
+        targetWorld -= playerCamera.transform.up * handTargetVerticalOffset;
+
+        localPosition = parent.InverseTransformPoint(targetWorld);
+
+        Vector3 lookDirection = currentInteractionPoint - targetWorld;
+        if (lookDirection.sqrMagnitude < 0.0001f)
+        {
+            lookDirection = playerCamera.transform.forward;
+        }
+
+        Quaternion worldRotation = Quaternion.LookRotation(lookDirection.normalized, playerCamera.transform.up);
+        localRotation = Quaternion.Inverse(parent.rotation) * worldRotation;
+    }
+
+    private void SnapHandsToCurrentPose()
+    {
+        if (leftHand != null)
+        {
+            leftHand.localPosition = leftHandRestPosition;
+            leftHand.localRotation = Quaternion.Euler(leftHandRestRotation);
+        }
+
+        if (rightHand != null)
+        {
+            rightHand.localPosition = rightHandRestPosition;
+            rightHand.localRotation = Quaternion.Euler(rightHandRestRotation);
+        }
+    }
+
+    private void EnsureHandsExist()
+    {
+        if (!createPlaceholderHandsIfMissing)
+        {
+            return;
+        }
+
+        if (leftHand == null)
+        {
+            leftHand = CreatePlaceholderHand("LeftHand", true);
+        }
+
+        if (rightHand == null)
+        {
+            rightHand = CreatePlaceholderHand("RightHand", false);
+        }
+    }
+
+    private Transform CreatePlaceholderHand(string handName, bool isLeftHand)
+    {
+        GameObject handObject = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        handObject.name = handName;
+        handObject.transform.SetParent(playerCamera.transform, false);
+        handObject.transform.localScale = placeholderHandScale;
+        handObject.layer = gameObject.layer;
+
+        if (handObject.TryGetComponent(out Collider handCollider))
+        {
+            Destroy(handCollider);
+        }
+
+        if (handObject.TryGetComponent(out Renderer handRenderer))
+        {
+            handRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            handRenderer.receiveShadows = false;
+
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+            {
+                shader = Shader.Find("Standard");
+            }
+
+            if (shader != null)
+            {
+                Material handMaterial = new Material(shader);
+                handMaterial.color = placeholderHandColor;
+                handRenderer.material = handMaterial;
+            }
+        }
+
+        Vector3 localEuler = isLeftHand ? leftHandRestRotation : rightHandRestRotation;
+        handObject.transform.localRotation = Quaternion.Euler(localEuler);
+
+        return handObject.transform;
+    }
+
     private bool CanStand()
     {
         if (controller.height >= standingHeight - 0.01f)
@@ -405,11 +700,9 @@ public class PlayerController : MonoBehaviour, InputSystem_Actions.IPlayerAction
 
     public void OnInteract(InputAction.CallbackContext context)
     {
-        playerInteractor?.SetInteractHeld(context.ReadValueAsButton());
-
-        if (context.performed)
+        if (context.started)
         {
-            playerInteractor?.TryInteract();
+            interactPressed = true;
         }
     }
 
